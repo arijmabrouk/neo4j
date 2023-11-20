@@ -1,0 +1,5 @@
+pipenv install sumy  rake-nltk 
+pipenv install pandas openpyxl
+
+pipenv install spacy = "==3.6"
+python -m spacy download en_core_web_sm

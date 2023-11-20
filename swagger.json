@@ -1,0 +1,608 @@
+{
+    "swagger": "2.0",
+    "info": {
+      "title": "Neo4j database project",
+      "description": "Neo4j database project",
+      "version": "1.0"
+    },
+    "paths": {
+        "/get_graph": {
+            "get": {
+              "summary": "Get the entire graph",
+              "description": "",
+              "responses": {
+                "200": {
+                  "description": "Successful operation"
+                },
+                "500": {
+                  "description": "Internal Server Error"
+                }
+              }
+            }
+          },
+      "/login": {
+        "post": {
+          "summary": "Authenticate user",
+          "description": "",
+          "parameters": [
+            {
+              "in": "body",
+              "name": "body",
+              "required": true,
+              "schema": {
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "role": {
+                    "type": "string"
+                  }
+                },
+                "required": ["email", "password"],
+                "type": "object"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful authentication"
+            },
+            "401": {
+              "description": "Invalid password"
+            },
+            "404": {
+              "description": "User does not exist"
+            },
+            "500": {
+              "description": "Internal Server Error"
+            }
+          }
+        }
+      },
+      "/users": {
+        "post": {
+          "summary": "Create a new user",
+          "description": "",
+          "parameters": [
+            {
+              "in": "body",
+              "name": "body",
+              "required": true,
+              "schema": {
+                "properties": {
+                  "email": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "required": ["email", "password"],
+                "type": "object"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "User created"
+            },
+            "400": {
+              "description": "Email already exists"
+            },
+            "500": {
+              "description": "Failed to create user"
+            }
+          }
+        }
+      },
+      "/patients": {
+        "get": {
+          "summary": "Get all patients",
+          "responses": {
+            "200": {
+              "description": "Successful operation",
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/Patient"
+                }
+              }
+            }
+          }
+        },
+        "post": {
+          "security": [
+            {
+              "BearerAuth": []
+            }
+          ],
+          "summary": "Create a new patient",
+          "description": "",
+          "parameters": [
+            {
+              "in": "body",
+              "name": "body",
+              "required": true,
+              "schema": {
+                "properties": {
+                  "nom": {
+                    "type": "string"
+                  },
+                  "prenom": {
+                    "type": "string"
+                  },
+                  "age": {
+                    "type": "integer"
+                  },
+                  "sexe": {
+                    "type": "string"
+                  },
+                  "telephone": {
+                    "type": "string"
+                  },
+                  "adresse": {
+                    "type": "string"
+                  }
+                },
+                "required": ["nom", "prenom", "age", "sexe", "telephone", "adresse"],
+                "type": "object"
+              }
+            }
+          ],
+          "responses": {
+            "201": {
+              "description": "Patient created"
+            },
+            "500": {
+              "description": "Internal Server Error"
+            }
+          }
+        },
+        "securityDefinitions": {
+          "BearerAuth": {
+            "type": "apiKey",
+            "name": "Authorization",
+            "in": "header",
+            "description": "JWT authorization using the Bearer scheme. Example: 'Bearer {token}'"
+          }
+        }
+      },
+      
+      
+        "/get_graph/{patient_id}": {
+          "parameters": [
+            {
+              "in": "path",
+              "name": ":patient_id",
+              "required": true,
+              "type": "integer"
+            }
+          ],
+          "get": {
+            "summary": "Get patient tree graph",
+            "description": "Retrieves the subgraph connected to a specific patient.",
+            "responses": {
+              "200": {
+                "description": "Subgraph retrieved successfully"
+              },
+              "500": {
+                "description": "Internal Server Error"
+              }
+            }
+          }
+        }
+      ,
+      "/patients/{patient_id}": {
+        "get": {
+          "summary": "Get patient by ID",
+          "parameters": [
+            {
+              "name": "patient_id",
+              "in": "path",
+              "description": "ID of the patient",
+              "required": true,
+              "type": "integer",
+              "format": "int64"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful operation",
+              "schema": {
+                "$ref": "#/definitions/Patient"
+              }
+            },
+            "404": {
+              "description": "Patient not found"
+            }
+          }
+        }},
+      "/patients/{identity}": {
+        "delete": {
+          "summary": "Delete a patient",
+          "description": "",
+          "parameters": [
+            {
+              "in": "path",
+              "name": "identity",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Patient deleted successfully"
+            },
+            "404": {
+              "description": "Patient not found"
+            },
+            "500": {
+              "description": "Internal Server Error"
+            }
+          }
+        }
+      },
+      "/patients/doctor/{id}": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "type": "integer"
+          }
+        ],
+        "delete": {
+          "summary": "Remove doctor from patient",
+          "description": "Removes the doctor from the specified patient.",
+          "security": [
+            {
+              "jwt": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Doctor removed from patient successfully"
+            },
+            "400": {
+              "description": "Bad Request"
+            },
+            "404": {
+              "description": "Patient not found"
+            }
+          }
+        },
+        "put": {
+          "summary": "Add doctor to patient",
+          "description": "Adds the doctor to the specified patient.",
+          "security": [
+            {
+              
+                "type": "apiKey",
+                "name": "Authorization",
+                "in": "header",
+                "description": "JWT authorization using the Bearer scheme. Example: 'Bearer {token}'"
+              }
+            
+          ],
+          "responses": {
+            "200": {
+              "description": "Doctor added to patient successfully"
+            },
+            "400": {
+              "description": "Bad Request"
+            },
+            "404": {
+              "description": "Patient not found"
+            }
+          }
+        }
+      },
+      "/nodesNames": {
+        "get": {
+          "summary": "Get node names",
+          "description": "",
+          "security": [
+            {
+              "jwt": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful operation"
+            },
+            "500": {
+              "description": "Internal Server Error"
+            }
+          }
+        },
+        "post": {
+          "summary": "Create node names",
+          "description": "",
+          "security": [
+            {
+              "jwt": []
+            }
+          ],
+          "parameters": [
+            {
+              "in": "body",
+              "name": "body",
+              "required": true,
+              "schema": {
+                "properties": {
+                  "nodeNames": {
+                    "type": "string"
+                  }
+                },
+                "required": ["nodeNames"],
+                "type": "object"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Node names added successfully"
+            },
+            "400": {
+              "description": "Invalid request data"
+            }
+          }
+        }
+      },
+      "/relationshipNames": {
+        "get": {
+          "summary": "Get relationship names",
+          "description": "",
+          "security": [
+            {
+              "jwt": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful operation"
+            },
+            "500": {
+              "description": "Internal Server Error"
+            }
+          }
+        },
+        "post": {
+          "summary": "Create relationship names",
+          "description": "",
+          "security": [
+            {
+              "jwt": []
+            }
+          ],
+          "parameters": [
+            {
+              "in": "body",
+              "name": "body",
+              "required": true,
+              "schema": {
+                "properties": {
+                  "relationshipNames": {
+                    "type": "string"
+                  }
+                },
+                "required": ["relationshipNames"],
+                "type": "object"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Relationship names added successfully"
+            },
+            "400": {
+              "description": "Invalid request data"
+            }
+          }
+        }
+      },
+      "/doctor/patients": {
+        "get": {
+          "summary": "Get patients by doctor",
+          "description": "Retrieve the list of patients associated with a specific doctor.",
+          "security": [
+            {
+              "bearerAuth": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Patient"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/doctor/free/patients": {
+        "get": {
+          "summary": "Get patients with no assigned doctor",
+          "description": "Retrieve the list of patients who do not have an assigned doctor.",
+          "security": [
+            {
+              "bearerAuth": []
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Patient"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/users/update": {
+        "put": {
+          "summary": "Update user information",
+          "description": "Update the information of a user.",
+          "security": [
+            {
+              "bearerAuth": []
+            }
+          ],
+          "requestBody": {
+            "description": "User data",
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserUpdateData"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Successful response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/User"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      
+  "/users/{user_id}": {
+    "get": {
+      "summary": "Get Doctor by ID",
+      "description": "Retrieve a user wich is a doctor  by their ID.",
+      "security": [
+        {
+          "bearerAuth": []
+        }
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "in": "path",
+          "description": "ID of the user",
+          "required": true,
+          "schema": {
+            "type": "integer"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Successful response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/User"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  
+    "/create_node": {
+      "post": {
+        "summary": "Create Node",
+        "description": "Create a new node in the graph. keys are : . file .type  .value  .patient_id .date  .fileName  .nodeName  .source  .relationshipName  .source_nodeName ",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "file"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  },
+                  "patient_id": {
+                    "type": "string"
+                  },
+                  "date": {
+                    "type": "string"
+                  },
+                  "fileName": {
+                    "type": "string"
+                  },
+                  "nodeName": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "relationshipName": {
+                    "type": "string"
+                  },
+                  "source_nodeName": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "node_id": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  
+  
+    },
+  
+    
+      "securitySchemes": {
+        "jwt": {
+          "type": "http",
+          "scheme": "bearer",
+          "bearerFormat": "JWT"
+        }
+      }
+     
+    
+  }
+  

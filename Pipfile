@@ -1,0 +1,34 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+flask = "*"
+flask-jwt-extended = "*"
+flask-cors = "*"
+bcrypt = "*"
+python-dotenv = "*"
+flask-swagger = "*"
+flask-swagger-ui = "*"
+networkx = "*"
+pypdf2 = "*"
+cloudinary = "*"
+tensorflow = "*"
+keras = "*"
+gensim = "*"
+nltk = "*"
+pillow = "*"
+scikit-learn = "*"
+sumy = "*"
+rake-nltk = "*"
+spacy = "==3.6"
+pandas = "*"
+openpyxl = "*"
+neo4j = "*"
+rdflib = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.11"
