@@ -217,10 +217,9 @@ def login():
     with driver.session() as session:
         try:
             result = session.run(
-                f"MATCH (u:{role} {{email: $email}}) RETURN u",
+                f"MATCH (u:{role.capitalize()} {{email: $email}}) RETURN u",
                 email=email
             )
-
             user_node = result.single()
 
             if user_node is None:
@@ -281,7 +280,7 @@ def add_patient():
         sexe = data.get("sexe")
         telephone = data.get("telephone")
         adresse = data.get("adresse")
-        patient_password = bcrypt.hashpw(data.get('password').encode('utf-8'), bcrypt.gensalt())
+        patient_password = bcrypt.hashpw(data.get('password').encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
         try:
             result = session.run(
@@ -328,11 +327,8 @@ def add_document():
             try:
                 # Check if the Filtrate node exists, create it if not
                 session.run(
-                    "MERGE (f:Filtrate {name: 'filtrate'}) "
-                    "WITH f "
                     "MATCH (p:Patient {email: $email}) "
                     "CREATE (d:Document {name: $document_name, filepath: $filepath})-[:HAS]->(p) "
-                    "CREATE (p)-[:FILTRATE]->(f) "
                     "RETURN d",
                     email=patient_email,
                     document_name=document_name,
@@ -347,6 +343,7 @@ def add_document():
 
 
 
+
 import base64
 
 @app.route('/graph', methods=['GET'])
@@ -358,14 +355,13 @@ def get_graph():
 
     # Cypher query to retrieve the graph for a specific patient with related documents
     query = (
-        "MATCH (d:Document)-[:HAS]->(p:Patient {email: $patient_email}) "
-        "MATCH (f:Filtrate)-[:FILTRATE]->(p:Patient {email: $patient_email}) "
-        "RETURN id(p) as patient_id, p as patient_properties, id(d) as document_id, d as document_properties, id(f) as filtrate_id"
+        "MATCH    (d:Document)-[:HAS]-> (p:Patient {email: $patient_email}) "
+      
+        "RETURN id(p) as patient_id, p as patient_properties, id(d) as document_id, d as document_properties"
     )
 
     with driver.session() as session:
         result = session.run(query, patient_email=patient_email).data()
-
 
     nodes = []
     edges = []
@@ -379,7 +375,7 @@ def get_graph():
         document_properties = record['document_properties']
         document_name = document_properties.get('name', 'Unknown')  # Replace 'Unknown' with a default value
 
-        filtrate_id = record["filtrate_id"]
+        # filtrate_id = record["filtrate_id"]
 
         # Convert bytes to string or handle binary data appropriately
         for key, value in patient_properties.items():
@@ -394,10 +390,10 @@ def get_graph():
         # Include patient information and document name in the nodes
         nodes.append({'id': patient_id, 'label': f"Patient: {patient_name}", 'group': 'patient', 'info': patient_properties})
         nodes.append({'id': document_id, 'label': f"Document: {document_name}", 'group': 'document', 'info': document_properties})
-        nodes.append({'id': filtrate_id, 'label': "Filtrate", 'group': 'filtrate'})
+        # nodes.append({'id': filtrate_id, 'label': "Filtrate", 'group': 'filtrate'})
 
         edges.append({'from': patient_id, 'to': document_id, 'label': 'HAS'})
-        edges.append({'from': patient_id, 'to': filtrate_id, 'label': 'Filtrate'})
+        # edges.append({'from': patient_id, 'to': filtrate_id, 'label': 'Filtrate'})
 
     return jsonify({'nodes': nodes, 'edges': edges})
 
