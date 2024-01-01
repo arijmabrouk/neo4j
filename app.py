@@ -1,7 +1,7 @@
 import json
 import random
 import string
-from excelAlgo import getMesureExcel, getNumericFilter
+from excelAlgo import getMesureExcel, getNumericFilter,extract_csv_data
 from flask import Flask, jsonify, make_response,request, send_file
 from neo4j import Record
 import bcrypt
@@ -18,8 +18,21 @@ from textAlgo import NMF_topicsByFolder, NMF_topicsByOne, getAllTopicsLDA, getGr
 import uuid
 from utils import createGraphGS, createLinksWithPATIENT, createResponseGraphInDatabase, extract_drugs_from_file, fetch_tree_graph, predict_cancer, transform_to_rdf
 from rdflib import Graph, URIRef, Literal, RDF
-
-from neo4j.debug import watch
+import joblib
+import numpy as np
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
+import joblib
+from datetime import datetime,date
+from nltk.corpus import stopwords
+from nltk.stem import PorterStemmer
+import re
+from gensim import corpora, models
+import PyPDF2
+from nltk.tokenize import RegexpTokenizer
 
 #watch("neo4j")
 load_dotenv()
@@ -35,6 +48,11 @@ ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif'}
 # Create the 'uploads' directory if it doesn't exist
 uploads_dir = os.path.join(script_dir, 'uploads')
 os.makedirs(uploads_dir, exist_ok=True)
+# current_dir = os.path.dirname(__file__)
+
+# # Load the trained model during the application startup
+# model_path = os.path.join(current_dir, 'heart.py')
+# model = joblib.load(model_path)
 
 
 
@@ -66,20 +84,7 @@ os.makedirs(uploads_dir, exist_ok=True)
 
 
  #*************************************************************newpart
-def classify_document(file):
-    # Get the file extension of the document
-    file_extension = os.path.splitext(file)[1].lower()
 
-    if file_extension == '.pdf':
-        return 'PDF'
-    elif file_extension in ('.jpg', '.jpeg', '.png', '.gif', '.bmp'):
-        return 'Image'
-    elif file_extension in ('.xlsx', '.xls'):
-        return 'Excel'
-    elif file_extension in ('.mp4', '.avi', '.mkv'):
-        return 'Video'
-    else:
-        return 'Unknown'
 
     
 
@@ -284,24 +289,27 @@ def add_patient():
 
         try:
             result = session.run(
-                "CREATE (p:Patient {email: $email, password: $password, nom: $nom, prenom: $prenom, age: $age, sexe: $sexe, telephone: $telephone, adresse: $adresse}) RETURN p",
-                email=patient_email,
-                password=patient_password,
-                nom=nom,
-                prenom=prenom,
-                age=age,
-                sexe=sexe,
-                telephone=telephone,
-                adresse=adresse
+               "CREATE (p:Patient {email: $email, password: $password, nom: $nom, prenom: $prenom, age: $age, sexe: $sexe, telephone: $telephone, adresse: $adresse})"
+    "RETURN p",
+    email=patient_email,
+    password=patient_password,
+    nom=nom,
+    prenom=prenom,
+    age=age,
+    sexe=sexe,
+    telephone=telephone,
+    adresse=adresse
             )
 
             patient_node = result.single()
             patient_id = patient_node["p"].id
+            
 
             return jsonify({"message": "Patient added successfully", "patient_id": patient_id}), 200
         except Exception as e:
             print(e)
             return jsonify({"error": str(e)}), 500
+        
 
 # New route to add a document for a patient
 @app.route('/add_document', methods=['POST'])
@@ -316,23 +324,26 @@ def add_document():
     patient_email = request.form.get('email')
     document_file = request.files['document_file']
     document_name = request.form.get('document_name')
+    creation_date = date.today().isoformat()  # Convert to ISO format
 
     # Check if the file is allowed
     if document_file:
         # Save the file to the uploads folder
         filepath = os.path.join(uploads_dir, document_file.filename)
         document_file.save(filepath)
+        
 
         with driver.session() as session:
             try:
                 # Check if the Filtrate node exists, create it if not
                 session.run(
                     "MATCH (p:Patient {email: $email}) "
-                    "CREATE (d:Document {name: $document_name, filepath: $filepath})-[:HAS]->(p) "
+                    "CREATE (d:Document {name: $document_name, filepath: $filepath, creation_date: $creation_date})-[:HAS]->(p) "
                     "RETURN d",
                     email=patient_email,
                     document_name=document_name,
-                    filepath=filepath
+                    filepath=filepath,
+                    creation_date=creation_date
                 )
 
                 return jsonify({"message": "Document added successfully"}), 201
@@ -348,16 +359,19 @@ import base64
 
 @app.route('/graph', methods=['GET'])
 def get_graph():
-    patient_email = request.args.get('patient_email')  # Get patient email from query parameters
+    patient_email = request.args.get('patient_email')
 
     if not patient_email:
         return jsonify({"error": "Patient email is required"}), 400
 
-    # Cypher query to retrieve the graph for a specific patient with related documents
+    # Cypher query to retrieve the graph for a specific patient with related documents and filtrate
     query = (
-        "MATCH    (d:Document)-[:HAS]-> (p:Patient {email: $patient_email}) "
-      
-        "RETURN id(p) as patient_id, p as patient_properties, id(d) as document_id, d as document_properties"
+        "MATCH (p:Patient {email: $patient_email})"
+        # "OPTIONAL MATCH (f:Filtrate)<-[:HAS_FILTRATE]-(p)"
+        "OPTIONAL MATCH (d:Document)-[:HAS]->(p)"
+        "RETURN id(p) as patient_id, p as patient_properties, "
+        # "id(f) as filtrate_id, f as filtrate_properties, "
+        "id(d) as document_id, d as document_properties"
     )
 
     with driver.session() as session:
@@ -367,35 +381,335 @@ def get_graph():
     edges = []
 
     for record in result:
-        patient_id = record['patient_id']
-        patient_properties = record['patient_properties']
-        patient_name = patient_properties.get('nom', 'Unknown')  # Replace 'Unknown' with a default value
+        patient_id = record.get('patient_id')
+        patient_properties = record.get('patient_properties')
+        document_id = record.get('document_id')
+        document_properties = record.get('document_properties')
 
-        document_id = record['document_id']
-        document_properties = record['document_properties']
-        document_name = document_properties.get('name', 'Unknown')  # Replace 'Unknown' with a default value
+   
 
-        # filtrate_id = record["filtrate_id"]
+        if patient_id is not None and patient_properties is not None:
+            for key, value in patient_properties.items():
+                if isinstance(value, bytes):
+                    patient_properties[key] = value.decode('utf-8')
 
-        # Convert bytes to string or handle binary data appropriately
+            nodes.append({'id': patient_id, 'label': f"Patient: {patient_properties.get('nom', 'Unknown')}", 'group': 'patient', 'info': patient_properties})
+
+       
+
+        if document_id is not None and document_properties is not None:
+            for key, value in document_properties.items():
+                if isinstance(value, bytes):
+                    if document_properties[key]!="creation_date":
+                        document_properties[key] = base64.b64encode(value).decode('utf-8')
+
+            nodes.append({'id': document_id, 'label': f"Document: {document_properties.get('name', 'Unknown')}", 'group': 'document', 'info': document_properties})
+            edges.append({'from': patient_id, 'to': document_id, 'label': 'HAS'})
+
+
+
+    return jsonify({'nodes': nodes, 'edges': edges})
+
+
+def classify_document_type(document_name):
+    # Implement your logic to classify the document type based on the document name
+    # For example, you might check the file extension or other criteria
+    if document_name.endswith('.pdf'):
+        return 'PDF'
+    elif document_name.endswith('.jpg') or document_name.endswith('.png'):
+        return 'Image'
+    elif document_name.endswith('.csv'):
+        return 'CSV'
+    else:
+        return 'Other'
+
+
+@app.route('/document_types_graph', methods=['GET'])
+def get_classified_documents():
+    patient_email = request.args.get('patient_email')
+    document_types_string = request.args.get('document_types', '')  # Get document types as a string
+
+    if not patient_email:
+        return jsonify({"error": "Patient email is required"}), 400
+
+    document_types = [type.strip() for type in document_types_string.split(',')] if document_types_string else []
+
+    query = (
+    "MATCH (p:Patient {email: $patient_email}) MERGE (f:Filtrate)<-[:HAS_FILTRATE]-(p) WITH p, f OPTIONAL MATCH (d:Document)-[:HAS]->(p) RETURN d, id(d) as document_id, p as patient_properties, id(f) as filtrate_id, f as filtrate_properties"
+)
+
+
+    with driver.session() as session:
+        result = session.run(query, patient_email=patient_email).data()
+
+    documents = []
+    nodes = []
+    edges = []
+
+    for record in result:
+        document_node = record.get('d')
+        patient_properties = record.get('patient_properties')
+        filtrate_id = record.get('filtrate_id')
+        filtrate_properties = record.get('filtrate_properties')
+
+        # Convert bytes to utf-8 if necessary
         for key, value in patient_properties.items():
             if isinstance(value, bytes):
                 patient_properties[key] = value.decode('utf-8')
 
-        for key, value in document_properties.items():
-            if isinstance(value, bytes):
-                # Example: base64 encode binary data
-                document_properties[key] = base64.b64encode(value).decode('utf-8')
+        if filtrate_id is not None and filtrate_properties is not None:
+            for key, value in filtrate_properties.items():
+                if isinstance(value, bytes):
+                    filtrate_properties[key] = value.decode('utf-8')
 
-        # Include patient information and document name in the nodes
-        nodes.append({'id': patient_id, 'label': f"Patient: {patient_name}", 'group': 'patient', 'info': patient_properties})
-        nodes.append({'id': document_id, 'label': f"Document: {document_name}", 'group': 'document', 'info': document_properties})
-        # nodes.append({'id': filtrate_id, 'label': "Filtrate", 'group': 'filtrate'})
+            nodes.append({'id': filtrate_id, 'label': 'Filtrate', 'group': 'filtrate', 'info': filtrate_properties})
+            edges.append({'from': "patient", 'to': filtrate_id, 'label': 'HAS_FILTRATE'})
 
-        edges.append({'from': patient_id, 'to': document_id, 'label': 'HAS'})
-        # edges.append({'from': patient_id, 'to': filtrate_id, 'label': 'Filtrate'})
+        if document_node:
+            document_name = document_node.get('name', 'Unknown')
+            document_id = record['document_id']
+            document_type = classify_document_type(document_name)
+
+
+            if document_type in document_types or not document_types:
+                documents.append({'name': document_name, 'type': document_type, 'properties': dict(document_node), 'id': document_id})
+
+                # Add node for the document
+                nodes.append({'id': document_id, 'label': f"Document: {document_name}", 'group': 'document', 'info': dict(document_node)})
+
+                # Add edge between patient and document with type
+                edges.append({'from': filtrate_id, 'to': document_id, 'label': f'HAS_{document_type}_DOCUMENT'})
+
+    # Add node for the patient
+    nodes.append({'id': 'patient', 'label': f"Patient: {patient_email}", 'group': 'patient', 'info': patient_properties})
 
     return jsonify({'nodes': nodes, 'edges': edges})
+
+
+
+
+@app.route('/documents_by_date_range', methods=['GET'])
+def get_documents_by_date_range():
+    patient_email = request.args.get('patient_email')
+    start_date_str = request.args.get('start_date')
+    end_date_str = request.args.get('end_date')
+
+    if not patient_email or not start_date_str or not end_date_str:
+        return jsonify({"error": "Patient email, start date, and end date are required"}), 400
+
+    try:
+        # Parse the start and end dates
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), 400
+
+    # Query to retrieve documents for a specific patient within the specified date range
+    query = (
+        "MATCH (p:Patient {email: $patient_email}) MERGE (s:display)<-[:HAS_DISPLAY]-(p) WITH p, s MATCH (d:Document)-[:HAS]->(p) WHERE date(d.creation_date) >= $start_date AND date(d.creation_date) <= $end_date RETURN p, d, id(d) as document_id, id(p) as patient_id, id(s) as display_id, s as display_properties"
+    )
+
+    with driver.session() as session:
+        result = session.run(query, patient_email=patient_email, start_date=start_date, end_date=end_date).data()
+
+    nodes = []
+    edges = []
+
+    for record in result:
+        patient_node = record.get('p')
+        document_node = record.get('d')
+        display_id = record.get('display_id')
+        display_properties = record.get('display_properties')
+
+        if patient_node:
+            patient_id = record['patient_id']
+            patient_properties = dict(patient_node)
+            nodes.append({'id': patient_id, 'label': f"Patient: {patient_properties.get('nom', 'Unknown')}", 'group': 'patient', 'info': patient_properties})
+
+        if document_node:
+            document_name = document_node.get('name', 'Unknown')
+            document_id = record['document_id']
+            patient_id = record['patient_id']
+            document_type = classify_document_type(document_name)
+
+        if display_id is not None and display_properties is not None:
+            for key, value in display_properties.items():
+                if isinstance(value, bytes):
+                    display_properties[key] = value.decode('utf-8')
+
+            nodes.append({'id': display_id, 'label': 'Display', 'group': 'display', 'info': display_properties})
+            edges.append({'from': patient_id, 'to': display_id, 'label': 'HAS_DISPLAY'})
+
+            # Add node for the document
+            nodes.append({'id': document_id, 'label': f"Document: {document_name}", 'group': 'document', 'info': dict(document_node)})
+
+            # Add edge between patient and document with type
+            edges.append({'from': display_id, 'to': document_id, 'label': f'HAS_{document_type}_DOCUMENT'})
+
+    return jsonify({'nodes': nodes, 'edges': edges})
+
+
+def extract_text_from_pdf(file_path):
+    with open(file_path, "rb") as file:
+        pdf_reader = PyPDF2.PdfReader(file)
+        text = ""
+        for page_num in range(len(pdf_reader.pages)):
+            text += pdf_reader.pages[page_num].extract_text()
+    return text
+
+
+def preprocess_text(text):
+    # Convert to lowercase
+    text = text.lower()
+
+    # Remove special characters, numbers, and punctuation
+    text = re.sub(r'[^a-z\s]', '', text)
+
+    # Tokenize the text
+    tokens = text.split()
+
+    # Remove stop words
+    stop_words = set(stopwords.words('english'))
+    tokens = [token for token in tokens if token not in stop_words]
+
+    # Stemming
+    stemmer = PorterStemmer()
+    tokens = [stemmer.stem(token) for token in tokens]
+
+    # Join the tokens back into a single string
+    processed_text = ' '.join(tokens)
+
+    return processed_text
+
+
+
+
+# @app.route('/classify_pdf', methods=['POST'])
+# def classify_pdf():
+#     patient_email = request.args.get('patient_email')
+
+#     if not patient_email:
+#         return jsonify({"error": "Patient email is required"}), 400
+
+#     # Retrieve all documents associated with the patient
+#     query = (
+#         "MATCH (p:Patient {email: $patient_email})"
+#         "MATCH (d:Document)-[:HAS]->(p)"
+#         "RETURN id(p) as patient_id, p as patient_properties, "
+#         "id(d) as document_id, d as document_properties"
+#     )
+
+#     with driver.session() as session:
+#         result = session.run(query, patient_email=patient_email).data()
+
+#     # Extract text from each PDF document and preprocess
+#     texts = []
+#     for doc in result:
+#         # Check if 'filepath' key exists in document properties
+#         if 'filepath' in doc['document_properties']:
+#             pdf_filepath = doc['document_properties']['filepath']
+
+#             # Check if the document is a PDF
+#             if pdf_filepath.lower().endswith('.pdf'):
+#                 # Print or log the PDF file path for testing purposes
+#                 print(f"Processing PDF: {pdf_filepath}")
+
+#                 # Extract text and preprocess
+#                 text = extract_text_from_pdf(pdf_filepath)
+#                 # Tokenize the text using RegexpTokenizer
+#                 tokenizer = RegexpTokenizer(r'\w+')
+#                 tokens = tokenizer.tokenize(text)
+#                 texts.append(tokens)
+#             else:
+#                 # Skip non-PDF documents
+#                 print(f"Skipping non-PDF document: {pdf_filepath}")
+#         else:
+#             # Handle the case where 'filepath' key is not present
+#             texts.append([])  # or any other appropriate action
+
+#     # Train LDA model
+#     dictionary = corpora.Dictionary(texts)
+#     corpus = [dictionary.doc2bow(token_list) for token_list in texts]
+#     lda_model = models.LdaModel(corpus, num_topics=5, id2word=dictionary, passes=15)
+
+#     # Assign topics to documents
+#     topics = lda_model[corpus]
+
+#     # Add topic information to the result
+#     for i, doc_topics in enumerate(topics):
+#         result[i]['document_properties']['topics'] = max(doc_topics, key=lambda x: x[1])
+
+#     return jsonify(result)
+
+
+
+
+
+
+
+
+
+
+
+
+
+# def get_classified_documents():
+#     patient_email = request.args.get('patient_email')
+
+#     if not patient_email:
+#         return jsonify({"error": "Patient email is required"}), 400
+
+#     query = (
+#         "MATCH (p:Patient {email: $patient_email})"
+#         "OPTIONAL MATCH (d:Document)-[:HAS]->(p)"
+#         "RETURN d, id(d) as document_id"
+#     )
+
+#     with driver.session() as session:
+#         result = session.run(query, patient_email=patient_email).data()
+
+#     documents = []
+
+#     for record in result:
+#         document_node = record.get('d')
+#         if document_node:
+#             document_name = document_node.get('name', 'Unknown')  # Replace 'Unknown' with a default value
+#             document_id = record['document_id']  # Retrieve document_id directly from the record
+
+#             # Classify document type
+#             document_type = classify_document_type(document_name)
+
+#             documents.append({'name': document_name, 'type': document_type, 'properties': dict(document_node), 'id': document_id})
+
+#     # Create nodes for each document with its type and type_document
+#     nodes = []
+#     edges = []  # Don't forget to initialize edges list
+#     for document in documents:
+#         document_name = document['name']
+#         document_type = document['type']
+#         document_id = document['id']
+
+#         # Add node for the document
+#         nodes.append({'id': document_id, 'label': f"Document: {document_name}", 'group': 'document', 'info': dict(document['properties'])})
+
+#         # Add node for the document type
+#         document_type_id = f"{document_type}_type"
+#         nodes.append({'id': document_type_id, 'label': f"Type: {document_type}", 'group': 'document_type', 'info': {'name': document_type}})
+
+#         # Add edge between document and document type
+#         edges.append({'from': document_id, 'to': document_type_id, 'label': 'HAS_TYPE'})
+
+
+#     return jsonify({'nodes': nodes, 'edges': edges})
+
+
+
+        
+        
+
+    
+
+
 
 
 @app.route("/users/update", methods=["PUT"])
@@ -497,6 +811,40 @@ def add_user():
                 return jsonify({"error": "Failed to create user"}), 500
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+        
+
+
+def convert_node_to_dict(node):
+    return {
+        'id': node.id,
+        'labels': list(node.labels),
+        'properties': dict(node),
+    }
+
+@app.route('/get_node_info/<int:node_id>', methods=['GET'])
+def get_node_info(node_id):
+    with driver.session() as session:
+        try:
+            result = session.run(
+                "MATCH (n) WHERE ID(n) = $node_id RETURN n",
+                node_id=node_id
+            )
+
+            # Use the .single() method to retrieve a single record
+            record = result.single()
+
+            if record:
+                node_info = convert_node_to_dict(record['n'])
+                return jsonify(node_info)
+            else:
+                return jsonify({"error": "Node not found"}), 404
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        
+
+
+
+
 
 @app.route("/users/<int:user_id>", methods=["GET"])
 @jwt_required()
@@ -509,12 +857,11 @@ def get_doc_byid(user_id):
         user = result.single()["u"]
         serialized_user = serialize_node(user)
         return jsonify(serialized_user)
+    
 
 
 
-
-
-
+    
 
 
 
@@ -573,13 +920,13 @@ def get_patients_withno_doctor():
         return jsonify(patients)
 
 
-def serialize_node(node):
-    serialized_node = dict(node)
-    serialized_node["id"] = node.id
-    for key, value in serialized_node.items():
-        if isinstance(value, bytes):
-            serialized_node[key] = value.decode("utf-8")
-    return serialized_node
+# def serialize_node(node):
+#     serialized_node = dict(node)
+#     serialized_node["id"] = node.id
+#     for key, value in serialized_node.items():
+#         if isinstance(value, bytes):
+#             serialized_node[key] = value.decode("utf-8")
+#     return serialized_node
 
 
 # @app.route("/patients", methods=["POST"])
@@ -1269,129 +1616,368 @@ def gettopic_byone():
         
         return jsonify(graph_data), 200
 #Confirmed 
+#modified by arij
+    
+def serialize_node(node):
+    serialized_node = dict(node)
+    serialized_node["id"] = node.id
+    for key, value in serialized_node.items():
+        if isinstance(value, bytes):
+            serialized_node[key] = value.decode("utf-8")
+    return serialized_node
+classes_keywords = {
+    'Diabetes': ['glycemia', 'glucose', 'diabetes', 'insulin'],
+    'Heart Diseases':['Cardiovascular','Cœur','Vaisseaux','Veines','heart', 'disease']
+    # Add more classes and their associated keywords
+}
+def claasifyTopics(results, classes_keywords, threshold=0):
+    document_classifications = {}
+    
+    # Flatten the results list of lists
+    all_keywords = [
+        entry['keyword'] if isinstance(entry, dict) else entry
+        for sublist in results
+        for entry in (sublist if isinstance(sublist, list) else [sublist])
+    ]
+    
+    for class_name, keywords in classes_keywords.items():
+        matched_keywords = set(keywords).intersection(set(all_keywords))
+        percentage_matched = len(matched_keywords) / len(keywords)
+        
+        if percentage_matched > threshold:
+            document_classifications[class_name] = percentage_matched
+
+    return document_classifications
+
+
+
+
+
+def create_class_node_and_relationship(session, document_id, class_name, percentage_matched):
+    # Create a node for the class if it doesn't exist
+    session.run(
+        "MERGE (c:Class {name: $class_name})",
+        class_name=class_name
+    )
+
+    # Create a relationship between the document and the class
+    session.run(
+        "MATCH (d:Document {id: $document_id}), (c:Class {name: $class_name}) "
+        "CREATE (d)-[:BELONGS_TO {percentage: $percentage}]->(c)",
+        document_id=document_id,
+        class_name=class_name,
+        percentage=percentage_matched
+    )
+def extract_word_percentage(results):
+    word_percentage_list = []
+    
+    for sublist in results:
+        for entry in (sublist if isinstance(sublist, list) else [sublist]):
+            if 'keyword' in entry and 'percentage' in entry:
+                word_percentage_list.append((entry['keyword'], entry['percentage']))
+    
+    return word_percentage_list
+
 @app.route("/topic/multiple", methods=["POST"])
 def gettopic_bymultiple():
+    # Get parameters from the request
     request_data = request.json
-    print(request_data)
-    patient_id = request_data.get("patient_id")
-    file_paths = request_data.get("file_paths", [])
+    patient_email = request_data.get("email")
     algo = request_data.get("algo")
-    query_key = request_data.get("query_key")
-    
+
+    # Neo4j query to retrieve patient and associated documents
+    query = (
+        "MATCH (p:Patient {email: $patient_email})"
+        "OPTIONAL MATCH (d:Document)-[:HAS]->(p)"
+        "RETURN id(p) as patient_id, p as patient_properties, "
+        "id(d) as document_id, d as document_properties"
+    )
+
     with driver.session() as session:
-        # Find the patient node with the given patient_id
-        result = session.run(
-            "MATCH (p:Patient) WHERE ID(p) = $patient_id RETURN p",
-            patient_id=int(patient_id)  # Assuming patient_id is an integer
-        )
+        result = session.run(query, patient_email=patient_email).data()
 
-        patient_node = result.single()
-        if patient_node is None:
-            return jsonify({"error": "Patient not found."}), 404
+        nodes = []
+        edges = []
 
-        patient_properties = patient_node["p"]
+        for record in result:
+            patient_id = record.get('patient_id')
+            patient_properties = record.get('patient_properties')
+            document_id = record.get('document_id')
+            document_properties = record.get('document_properties')
 
-          # Generate a random UUID for the document node
-        results_id = str(uuid.uuid4()) 
-        patientuuid_id = str(uuid.uuid4()) 
+            # Filter PDF documents
+            if document_properties.get("filepath", "").endswith(".pdf"):
+                # Process document information
+                if document_properties.get("filepath", "").endswith(".pdf"):
+                    # Process document information
+                    results = []
+                    if document_properties is not None:
+                        try:
+                            if algo == "LDA":
+                                results = getTopicForOneLDA(document_properties.get("filepath"))
+                            elif algo == "NMF":
+                                results = NMF_topicsByOne(document_properties.get("filepath"), 5)
+
+                            document_classifications = claasifyTopics(results, classes_keywords)
+                            # Create nodes and relationships dynamically
+                            for class_name, percentage_matched in document_classifications.items():
+
+                                if not results or not any(results):
+                                    continue
+                                # Create a relationship between the document and the class
+                                session.run(
+                                    "MERGE (c:Class {name: $class_name}) "
+                                    "SET c.id = coalesce(c.id, randomUUID()) "
+                                    "WITH c "
+                                    "MATCH (d:Document {id: $document_id}) "
+                                    "CREATE (d)-[:BELONGS_TO {percentage: $percentage}]->(c)",
+                                    document_id=document_id,
+                                    class_name=class_name,
+                                    percentage=percentage_matched
+                                )
+
+                                # Append nodes to the list
+                                nodes.append({'id': document_id, 'label': f"Document: {document_properties.get('name', 'Unknown')}", 'group': 'document', 'info': dict(document_properties)})
+                                nodes.append({'id': class_name, 'label': f"Class: {class_name}", 'group': 'class', 'info': {"name": class_name}})
+
+                                # Append edges to the list
+                                edges.append({
+                                    'from': document_id,
+                                    'to': class_name,
+                                    'label': 'BELONGS_TO'
+                                })
+
+                                for word, word_percentage in extract_word_percentage(results):
+                                    if any(word in keywords for keywords in classes_keywords.values()):
+                                        # Create or find the word node
+                                        session.run(
+                                            "MERGE (w:Word {name: $word})",
+                                            word=word
+                                        )
+
+                                        # Create a relationship between the document and the word
+                                        session.run(
+                                            "MATCH (d:Document {id: $document_id}), (w:Word {name: $word}) "
+                                            "MERGE (d)-[:CONTAINS {percentage: $word_percentage}]->(w)",
+                                            document_id=document_id,
+                                            word=word,
+                                            word_percentage=word_percentage
+                                        )
+
+                                        # Append nodes to the list
+                                        nodes.append({'id': word, 'label': f"Word: {word}", 'group': 'word', 'info': {"name": word}})
+
+                                        # Append edges to the list
+                                        edges.append({
+                                            'from': document_id,
+                                            'to': word,
+                                            'label': f'CONTAINS with percentage {word_percentage:.2%}',
+                                        })
+
+                        except FileNotFoundError:
+                            return jsonify({"error": "File not found."}), 404
+
+            elif document_properties.get("filepath", "").endswith(".csv"):
+                # Process CSV document information
+                if document_properties is not None:
+                    try:
+                        if algo == "CSV":
+                            csv_data = extract_csv_data(document_properties.get("filepath"))
+                            if csv_data:
+                                # Extract min, max, and average
+                                min_value = min(csv_data)
+                                max_value = max(csv_data)
+                                average_value = round(sum(csv_data) / len(csv_data), 2)
+
+
+                                # Create nodes and relationships for min, max, and average
+                                # Node for Min
+                                session.run(
+                                    "MERGE (min:Value {type: 'Min', value: $min_value})",
+                                    min_value=min_value
+                                )
+                                session.run(
+                                    "MATCH (d:Document {id: $document_id}), (min:Value {type: 'Min', value: $min_value}) "
+                                    "MERGE (d)-[:HAS_MIN]->(min)",
+                                    document_id=document_id,
+                                    min_value=min_value
+                                )
+                                nodes.append({'id': f"Min_{document_id}", 'label': f"Min: {min_value}", 'group': 'Min','info':{'name':min_value}})
+                                nodes.append({'id': document_id, 'label': f"Document: {document_properties.get('name', 'Unknown')}", 'group': 'document', 'info': dict(document_properties)})
+                                
+                                # Node for Max
+                                session.run(
+                                    "MERGE (max:Value {type: 'Max', value: $max_value})",
+                                    max_value=max_value
+                                )
+                                session.run(
+                                    "MATCH (d:Document {id: $document_id}), (max:Value {type: 'Max', value: $max_value}) "
+                                    "MERGE (d)-[:HAS_MAX]->(max)",
+                                    document_id=document_id,
+                                    max_value=max_value
+                                )
+                                nodes.append({'id': f"Max_{document_id}", 'label': f"Max: {max_value}", 'group': 'Max','info':{'name':max_value}})
+
+                                # Node for Average
+                                session.run(
+                                    "MERGE (average:Value {type: 'Average', value: $average_value})",
+                                    average_value=average_value
+                                )
+                                session.run(
+                                    "MATCH (d:Document {id: $document_id}), (average:Value {type: 'Average', value: $average_value}) "
+                                    "MERGE (d)-[:HAS_AVG]->(average)",
+                                    document_id=document_id,
+                                    average_value=average_value
+                                )
+                                edges.append({
+                                    'from':document_id ,
+                                    'to': f"Min_{document_id}",
+                                    'label': 'HAS_MIN'
+                                })
+
+                                edges.append({
+                                    'from':document_id ,
+                                    'to':  f"Max_{document_id}",
+                                    'label': 'HAS_MAX'
+                                })
+
+                                edges.append({
+                                    'from':document_id ,
+                                    'to':  f"Average_{document_id}",
+                                    'label': 'HAS_AVG'
+                                })
+                                nodes.append({'id': f"Average_{document_id}", 'label': f"Average: {average_value}", 'group': 'AVG','info':{'name':average_value}})
+
+                    except FileNotFoundError:
+                        return jsonify({"error": "File not found."}), 404
+
+        # Return the nodes and edges in the specified format
+        return jsonify({'nodes': nodes, 'edges': edges}), 200
+
+
+# @app.route("/topic/multiple", methods=["POST"])
+# def gettopic_bymultiple():
+#     request_data = request.json
+#     print(request_data)
+#     patient_id = request_data.get("patient_id")
+#     file_paths = request_data.get("file_paths", [])
+#     algo = request_data.get("algo")
+#     query_key = request_data.get("query_key")
     
-        graph_data = {
-            "nodes": [
-                {
-                    "id": patientuuid_id,
-                    "labels": ["PATIENT"],
-                    "properties": {"id":patientuuid_id},
-                }
-            ],
-            "links": []
-        }
+#     with driver.session() as session:
+#         # Find the patient node with the given patient_id
+#         result = session.run(
+#             "MATCH (p:Patient) WHERE ID(p) = $patient_id RETURN p",
+#             patient_id=int(patient_id)  # Assuming patient_id is an integer
+#         )
+
+#         patient_node = result.single()
+#         if patient_node is None:
+#             return jsonify({"error": "Patient not found."}), 404
+
+#         patient_properties = patient_node["p"]
+
+#           # Generate a random UUID for the document node
+#         results_id = str(uuid.uuid4()) 
+#         patientuuid_id = str(uuid.uuid4()) 
+    
+#         graph_data = {
+#             "nodes": [
+#                 {
+#                     "id": patientuuid_id,
+#                     "labels": ["PATIENT"],
+#                     "properties": {"id":patientuuid_id},
+#                 }
+#             ],
+#             "links": []
+#         }
 
         
 
-        # Create Results node
-        results_node = {
-            "id": results_id,
-            "labels": ["Results"],
-            "properties": {
-                "id":results_id,
-                "results": {},
-                "algo":algo
+#         # Create Results node
+#         results_node = {
+#             "id": results_id,
+#             "labels": ["Results"],
+#             "properties": {
+#                 "id":results_id,
+#                 "results": {},
+#                 "algo":algo
                 
-                # Initialize the "results" property as an empty dictionary
-            }
-        }
-        graph_data["nodes"].append(results_node)
+#                 # Initialize the "results" property as an empty dictionary
+#             }
+#         }
+#         graph_data["nodes"].append(results_node)
 
-        for idx, file_data in enumerate(file_paths, start=1):
-            file_path = file_data.get("value")
-            url = file_data.get("url")
-            document_id = str(uuid.uuid4())
-            # Create Document node
-            document_node = {
-                "id":document_id,
-                "labels": ["Document"],
-                "properties": {
-                    "file_path": file_path,
-                    "url": url,
-                    "id":document_id
+#         for idx, file_data in enumerate(file_paths, start=1):
+#             file_path = file_data.get("value")
+#             url = file_data.get("url")
+#             document_id = str(uuid.uuid4())
+#             # Create Document node
+#             document_node = {
+#                 "id":document_id,
+#                 "labels": ["Document"],
+#                 "properties": {
+#                     "file_path": file_path,
+#                     "url": url,
+#                     "id":document_id
                     
-                }
-            }
-            graph_data["nodes"].append(document_node)
+#                 }
+#             }
+#             graph_data["nodes"].append(document_node)
 
-            # Create relationship between Document and Results nodes with the specified relationshipName
-            document_to_results_link = {
-                "source":document_id,
-                "target": results_id,
-                "type": f"hasResultsWith{algo}", 
-                "properties": {}
-            }
-            graph_data["links"].append(document_to_results_link)
+#             # Create relationship between Document and Results nodes with the specified relationshipName
+#             document_to_results_link = {
+#                 "source":document_id,
+#                 "target": results_id,
+#                 "type": f"hasResultsWith{algo}", 
+#                 "properties": {}
+#             }
+#             graph_data["links"].append(document_to_results_link)
 
-            # Create relationship between Patient and Document nodes with "hasSummary"
-            patient_to_document_link = {
-                "source":patientuuid_id,  # Correctly assign the patient node ID as the source
-                "target":document_id,
-                "type": "hasSummary",
-                "properties": {}
-            }
-            graph_data["links"].append(patient_to_document_link)
+#             # Create relationship between Patient and Document nodes with "hasSummary"
+#             patient_to_document_link = {
+#                 "source":patientuuid_id,  # Correctly assign the patient node ID as the source
+#                 "target":document_id,
+#                 "type": "hasSummary",
+#                 "properties": {}
+#             }
+#             graph_data["links"].append(patient_to_document_link)
 
-            if algo == "LDA":
-                try:
-                    results = getTopicForOneLDA(file_path)  # Replace with actual function to get LDA results
-                except FileNotFoundError:
-                    return jsonify({"error": "File not found."}), 404
-            elif algo == "NMF":
-                try:
-                    results = NMF_topicsByOne(file_path, 5)  # Replace with actual function to get NMF results
-                except FileNotFoundError:
-                    return jsonify({"error": "File not found."}), 404
-            else:
-                return jsonify({"error": "Algorithm not supported."}), 400
+#             if algo == "LDA":
+#                 try:
+#                     results = getTopicForOneLDA(file_path)  # Replace with actual function to get LDA results
+#                 except FileNotFoundError:
+#                     return jsonify({"error": "File not found."}), 404
+#             elif algo == "NMF":
+#                 try:
+#                     results = NMF_topicsByOne(file_path, 5)  # Replace with actual function to get NMF results
+#                 except FileNotFoundError:
+#                     return jsonify({"error": "File not found."}), 404
+#             else:
+#                 return jsonify({"error": "Algorithm not supported."}), 400
 
-            # Update the "results" property of the "Results" node with the results
-            graph_data["nodes"][1]["properties"]["results"][f"{idx-1}"] = results
+#             # Update the "results" property of the "Results" node with the results
+#             graph_data["nodes"][1]["properties"]["results"][f"{idx-1}"] = results
 
-        graph_data["nodes"][1]["properties"]["results"] = json.dumps(graph_data["nodes"][1]["properties"]["results"])
-        #here
-        if not graph_data["nodes"] or not graph_data["links"]:
-            print("No nodes or links to process.")
-            return jsonify(graph_data), 200
-        query_uuid = createGraphGS(session, patient_id, "Extract Topics For Multiple  Documents", query_key, "Extracting")
+#         graph_data["nodes"][1]["properties"]["results"] = json.dumps(graph_data["nodes"][1]["properties"]["results"])
+#         #here
+#         if not graph_data["nodes"] or not graph_data["links"]:
+#             print("No nodes or links to process.")
+#             return jsonify(graph_data), 200
+#         query_uuid = createGraphGS(session, patient_id, "Extract Topics For Multiple  Documents", query_key, "Extracting")
 
-        patient_to_query_link = {
-            "source": f"{query_uuid}",
-            "target": f"{patientuuid_id}",
-            "type": "hasResultSummary",
-            "properties": {}
-        }
-        graph_data["links"].append(patient_to_query_link)  
-        graph_data_response = createResponseGraphInDatabase(
-            session, graph_data["nodes"], graph_data["links"])
+#         patient_to_query_link = {
+#             "source": f"{query_uuid}",
+#             "target": f"{patientuuid_id}",
+#             "type": "hasResultSummary",
+#             "properties": {}
+#         }
+#         graph_data["links"].append(patient_to_query_link)  
+#         graph_data_response = createResponseGraphInDatabase(
+#             session, graph_data["nodes"], graph_data["links"])
             
             
-        return jsonify(graph_data), 200
+#         return jsonify(graph_data), 200
 #Confirmed 
 @app.route('/abstractive/summarize', methods=['POST'])
 def summarize_files():

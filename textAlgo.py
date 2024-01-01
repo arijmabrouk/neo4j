@@ -58,13 +58,29 @@ def extract_text_from_pdf(filepath):
 
 
 def getTopicForOneLDA(pdf_filepath):
+    # Extract text from PDF
     document_text = extract_text_from_pdf(pdf_filepath)
+
+    # Check if document text is empty or None
+    if not document_text:
+        print("Error: Document text is empty.")
+        return []
 
     # Preprocess the document
     processed_doc = preprocess(document_text)
 
+    # Check if processed document is empty or None
+    if not processed_doc:
+        print("Error: Processed document is empty.")
+        return []
+
     # Create a corpus
     dictionary, corpus = create_corpus([processed_doc])
+
+    # Check if the dictionary or corpus is empty
+    if not dictionary or not corpus:
+        print("Error: Dictionary or corpus is empty.")
+        return []
 
     # Apply LDA
     num_topics = 5  # Adjust the number of topics as needed
@@ -103,6 +119,12 @@ def getAllTopicsLDA(folder_path):
 
 def NMF_topicsByOne(file_path, num_topics):
     text = extract_text_from_pdf(file_path)
+
+    # Add a check for empty documents
+    if not text.strip():
+        print(f"Warning: Document '{file_path}' is empty or contains only stop words.")
+        return []
+
     processed_doc = preprocess(text)
 
     vectorizer = TfidfVectorizer()
@@ -114,12 +136,13 @@ def NMF_topicsByOne(file_path, num_topics):
     feature_names = vectorizer.get_feature_names_out()
 
     topics = []
-    for topic_idx, topic in enumerate(nmf_model.components_):
+    for topic in nmf_model.components_:
         top_words = [feature_names[i] for i in topic.argsort()[:-6:-1]]
-        topics.append(top_words)
-        topic_str = ' '.join(str(val) for val in topic)
-        print(f"Topic {topic_idx + 1}: {topic_str}")
+        topics.extend(top_words)  # Extend the list instead of appending a sublist
+
     return topics
+
+
 
 
 

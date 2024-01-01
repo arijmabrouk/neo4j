@@ -1,6 +1,7 @@
 import uuid
 import pandas as pd
 import json
+import csv
 
 
 def getMesureExcel(filepath, aggregateFN):
@@ -102,3 +103,21 @@ def getMesureExcel(filepath, aggregateFN):
 def getNumericFilter(path):
     res = getMesureExcel(path)
     return res
+
+
+
+
+def extract_csv_data(file_path, column_index=0):
+    values = []
+
+    with open(file_path, 'r') as file:
+        reader = csv.reader(file)
+        for row in reader:
+            try:
+                value = float(row[column_index])
+                values.append(value)
+            except (ValueError, IndexError):
+                # Handle cases where the value is not a valid float or the index is out of bounds
+                pass
+
+    return values
