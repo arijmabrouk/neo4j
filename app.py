@@ -14,7 +14,7 @@ from db import driver
 from flask_swagger_ui import get_swaggerui_blueprint
 import networkx as nx
 import os
-from textAlgo import NMF_topicsByFolder, NMF_topicsByOne, getAllTopicsLDA, getGraphBasedSummarize_pg, getGraphBasedSummarize_tr, getTopicForOneHLDA, getTopicForOneLDA, getTreeBasedSummarize_pg
+from textAlgo import NMF_topicsByFolder, NMF_topicsByOne, getAllTopicsLDA, getGraphBasedSummarize_pg, getGraphBasedSummarize_tr, getTopicForOneLDA, getTreeBasedSummarize_pg,generate_text_summary
 import uuid
 from utils import createGraphGS, createLinksWithPATIENT, createResponseGraphInDatabase, extract_drugs_from_file, fetch_tree_graph, predict_cancer, transform_to_rdf
 from rdflib import Graph, URIRef, Literal, RDF
@@ -1626,10 +1626,10 @@ def serialize_node(node):
             serialized_node[key] = value.decode("utf-8")
     return serialized_node
 classes_keywords = {
-    'Diabetes': ['glycemia', 'glucose', 'diabetes', 'insulin'],
-    'Heart Diseases':['Cardiovascular','Cœur','Vaisseaux','Veines','heart', 'disease']
+    'Diabetes': ['glycemia', 'glucose', 'diabetes', 'insulin',"pancréas","hyperglycémie","HbA1c","régime alimentaire","endocrinologie","Neuropathie","type 1", "type 2","Glycémie à jeun","Glycémie"],
+    'Heart Diseases':['cardiovascular','Cœur','Vaisseaux','Veines','heart',"cardiopathie","infarctus du myocarde","athérosclérose","hypertension artérielle","insuffisance cardiaque","cholestérol","ventricule droit" ]
     # Add more classes and their associated keywords
-}
+,}
 def claasifyTopics(results, classes_keywords, threshold=0):
     document_classifications = {}
     
@@ -1639,6 +1639,7 @@ def claasifyTopics(results, classes_keywords, threshold=0):
         for sublist in results
         for entry in (sublist if isinstance(sublist, list) else [sublist])
     ]
+    print(all_keywords)
     
     for class_name, keywords in classes_keywords.items():
         matched_keywords = set(keywords).intersection(set(all_keywords))
@@ -1685,6 +1686,7 @@ def gettopic_bymultiple():
     patient_email = request_data.get("email")
     algo = request_data.get("algo")
 
+
     # Neo4j query to retrieve patient and associated documents
     query = (
         "MATCH (p:Patient {email: $patient_email})"
@@ -1704,6 +1706,9 @@ def gettopic_bymultiple():
             patient_properties = record.get('patient_properties')
             document_id = record.get('document_id')
             document_properties = record.get('document_properties')
+            nodes.append({'id': patient_id, 'label': f"Patient: {patient_properties.get('nom', 'Unknown')}", 'group': 'patient', 'info': patient_properties})
+            
+
 
             # Filter PDF documents
             if document_properties.get("filepath", "").endswith(".pdf"):
@@ -1713,12 +1718,20 @@ def gettopic_bymultiple():
                     results = []
                     if document_properties is not None:
                         try:
-                            if algo == "LDA":
+                            if algo == "HLDA":
                                 results = getTopicForOneLDA(document_properties.get("filepath"))
-                            elif algo == "NMF":
+                                # version_entry["algorithm_version"] = "LDA"
+                            elif algo == "LDA":
                                 results = NMF_topicsByOne(document_properties.get("filepath"), 5)
-
+                                # version_entry["algorithm_version"] = "NMF"
+                            elif algo == 'GRAPH_BASED_PG':
+                                results = getGraphBasedSummarize_pg(document_properties.get("filepath"))
+                            
+                            elif algo == 'TREE_BASED':
+                                results = generate_text_summary(document_properties.get("filepath"))
+               
                             document_classifications = claasifyTopics(results, classes_keywords)
+                            # version_entry["relationships"] = []
                             # Create nodes and relationships dynamically
                             for class_name, percentage_matched in document_classifications.items():
 
@@ -1735,12 +1748,33 @@ def gettopic_bymultiple():
                                     class_name=class_name,
                                     percentage=percentage_matched
                                 )
+                                # version_entry["relationships"].append({
+                                # "from": {"id": document_id, "labels": ["Document"], "properties": document_properties},
+                                # "to": {"id": class_name, "labels": ["Class"], "properties": {"name": class_name}},
+                                # "label": "BELONGS_TO",
+                                # # "properties": {"percentage": percentage_matched}
+                                #     })
+
+                                # version_entry["query_result"] = results
 
                                 # Append nodes to the list
                                 nodes.append({'id': document_id, 'label': f"Document: {document_properties.get('name', 'Unknown')}", 'group': 'document', 'info': dict(document_properties)})
+
                                 nodes.append({'id': class_name, 'label': f"Class: {class_name}", 'group': 'class', 'info': {"name": class_name}})
+                                nodes.append({'id': 'Extract', 'label': 'Extract', 'group': 'Extract', 'info': {"name": 'Extract'}})
+
 
                                 # Append edges to the list
+                                edges.append({
+                                            'from': patient_id,
+                                            'to': document_id,
+                                            'label': 'has',
+                                        })
+                                edges.append({
+                                            'from': patient_id,
+                                            'to': 'Extract',
+                                            'label': 'Extract',
+                                        })
                                 edges.append({
                                     'from': document_id,
                                     'to': class_name,
@@ -1768,6 +1802,7 @@ def gettopic_bymultiple():
                                         nodes.append({'id': word, 'label': f"Word: {word}", 'group': 'word', 'info': {"name": word}})
 
                                         # Append edges to the list
+                                        
                                         edges.append({
                                             'from': document_id,
                                             'to': word,
@@ -1781,78 +1816,279 @@ def gettopic_bymultiple():
                 # Process CSV document information
                 if document_properties is not None:
                     try:
-                        if algo == "CSV":
-                            csv_data = extract_csv_data(document_properties.get("filepath"))
-                            if csv_data:
-                                # Extract min, max, and average
-                                min_value = min(csv_data)
-                                max_value = max(csv_data)
-                                average_value = round(sum(csv_data) / len(csv_data), 2)
+                        if algo == "CSVMax" or algo=="CSVMin" or algo=="CSVAvg":
+                                                    csv_data = extract_csv_data(document_properties.get("filepath"))
+                                                    if csv_data:
+                                                        # Create a node for the document
+                                                        session.run(
+                                                            "MERGE (doc:Document {id: $document_id, name: $document_name})",
+                                                            document_id=document_id,
+                                                            document_name=document_properties.get('name', 'Unknown')
+                                                        )
+                                                        nodes.append({'id': document_id, 'label': f"Document: {document_properties.get('name', 'Unknown')}", 'group': 'document', 'info': dict(document_properties)})
 
 
-                                # Create nodes and relationships for min, max, and average
-                                # Node for Min
-                                session.run(
-                                    "MERGE (min:Value {type: 'Min', value: $min_value})",
-                                    min_value=min_value
-                                )
-                                session.run(
-                                    "MATCH (d:Document {id: $document_id}), (min:Value {type: 'Min', value: $min_value}) "
-                                    "MERGE (d)-[:HAS_MIN]->(min)",
-                                    document_id=document_id,
-                                    min_value=min_value
-                                )
-                                nodes.append({'id': f"Min_{document_id}", 'label': f"Min: {min_value}", 'group': 'Min','info':{'name':min_value}})
-                                nodes.append({'id': document_id, 'label': f"Document: {document_properties.get('name', 'Unknown')}", 'group': 'document', 'info': dict(document_properties)})
-                                
-                                # Node for Max
-                                session.run(
-                                    "MERGE (max:Value {type: 'Max', value: $max_value})",
-                                    max_value=max_value
-                                )
-                                session.run(
-                                    "MATCH (d:Document {id: $document_id}), (max:Value {type: 'Max', value: $max_value}) "
-                                    "MERGE (d)-[:HAS_MAX]->(max)",
-                                    document_id=document_id,
-                                    max_value=max_value
-                                )
-                                nodes.append({'id': f"Max_{document_id}", 'label': f"Max: {max_value}", 'group': 'Max','info':{'name':max_value}})
+                                                        # Iterate through columns
+                                                        for column_name, column_values in csv_data.items():
+                                                            # Create a node for the column
+                                                            column_node_id = f"Column_{column_name}"
+                                                            session.run(
+                                                                "MERGE (column:Column {id: $column_node_id, name: $column_name})",
+                                                                column_node_id=column_node_id,
+                                                                column_name=column_name
+                                                            )
+                                                            nodes.append({'id': column_node_id, 'label': f"Column: {column_name}", 'group': 'Column', 'info': {'name': column_name}})
 
-                                # Node for Average
-                                session.run(
-                                    "MERGE (average:Value {type: 'Average', value: $average_value})",
-                                    average_value=average_value
-                                )
-                                session.run(
-                                    "MATCH (d:Document {id: $document_id}), (average:Value {type: 'Average', value: $average_value}) "
-                                    "MERGE (d)-[:HAS_AVG]->(average)",
-                                    document_id=document_id,
-                                    average_value=average_value
-                                )
-                                edges.append({
-                                    'from':document_id ,
-                                    'to': f"Min_{document_id}",
-                                    'label': 'HAS_MIN'
-                                })
+                                                            # Extract min, max, and average for each column
+                                                            min_value = min(column_values)
+                                                            max_value = max(column_values)
+                                                            average_value = round(sum(column_values) / len(column_values), 2)
 
-                                edges.append({
-                                    'from':document_id ,
-                                    'to':  f"Max_{document_id}",
-                                    'label': 'HAS_MAX'
-                                })
+                                                            # Create nodes and relationships for min, max, and average of each column
+                                                            # Node for Min
+                                                            if algo=="CSVMin" :
+                                                                    min_node_id = f"Min_{column_node_id}"
+                                                                    session.run(
+                                                                        "MERGE (min:Value {id: $min_node_id, type: 'Min', value: $min_value})",
+                                                                        min_node_id=min_node_id,
+                                                                        min_value=min_value
+                                                                    )
+                                                                    session.run(
+                                                                        "MATCH (column:Column {id: $column_node_id}), (min:Value {id: $min_node_id, type: 'Min', value: $min_value}) "
+                                                                        "MERGE (column)-[:HAS_MIN]->(min)",
+                                                                        column_node_id=column_node_id,
+                                                                        min_node_id=min_node_id,
+                                                                        min_value=min_value
+                                                                    )
+                                                                    nodes.append({'id': min_node_id, 'label': f"Min {column_name}: {min_value}", 'group': 'Min', 'info': {'name': min_value, 'column': column_name}})
+                                                                    edges.append({
+                                                                            'from': column_node_id,
+                                                                            'to': min_node_id,
+                                                                            'label': f'HAS_MIN'
+                                                                        })
 
-                                edges.append({
-                                    'from':document_id ,
-                                    'to':  f"Average_{document_id}",
-                                    'label': 'HAS_AVG'
-                                })
-                                nodes.append({'id': f"Average_{document_id}", 'label': f"Average: {average_value}", 'group': 'AVG','info':{'name':average_value}})
+                                                            # Node for Max
+                                                            if(algo=="CSVMax"):        
+                                                                    max_node_id = f"Max_{column_node_id}"
+                                                                    session.run(
+                                                                        "MERGE (max:Value {id: $max_node_id, type: 'Max', value: $max_value})",
+                                                                        max_node_id=max_node_id,
+                                                                        max_value=max_value
+                                                                    )
+                                                                    session.run(
+                                                                        "MATCH (column:Column {id: $column_node_id}), (max:Value {id: $max_node_id, type: 'Max', value: $max_value}) "
+                                                                        "MERGE (column)-[:HAS_MAX]->(max)",
+                                                                        column_node_id=column_node_id,
+                                                                        max_node_id=max_node_id,
+                                                                        max_value=max_value
+                                                                    )
+                                                                    nodes.append({'id': max_node_id, 'label': f"Max {column_name}: {max_value}", 'group': 'Max', 'info': {'name': max_value, 'column': column_name}})
+                                                                    edges.append({
+                                                                'from': column_node_id,
+                                                                'to': max_node_id,
+                                                                'label': f'HAS_MAX'
+                                                            })
+                                                            if(algo=="CSVAvg"):
+                                                                    # Node for Average
+                                                                    avg_node_id = f"Average_{column_node_id}"
+                                                                    session.run(
+                                                                        "MERGE (average:Value {id: $avg_node_id, type: 'Average', value: $average_value})",
+                                                                        avg_node_id=avg_node_id,
+                                                                        average_value=average_value
+                                                                    )
+                                                                    session.run(
+                                                                        "MATCH (column:Column {id: $column_node_id}), (average:Value {id: $avg_node_id, type: 'Average', value: $average_value}) "
+                                                                        "MERGE (column)-[:HAS_AVG]->(average)",
+                                                                        column_node_id=column_node_id,
+                                                                        avg_node_id=avg_node_id,
+                                                                        average_value=average_value
+                                                                    )
+                                                                    nodes.append({'id': avg_node_id, 'label': f"Average {column_name}: {average_value}", 'group': 'AVG', 'info': {'name': average_value, 'column': column_name}})
+                                                                    edges.append({
+                                                                'from': column_node_id,
+                                                                'to': avg_node_id,
+                                                                'label': f'HAS_AVG'
+                                                            })
+
+                                                            # Create edges between document, column, and min, max, average nodes
+                                                            edges.append({
+                                                                'from': document_id,
+                                                                'to': column_node_id,
+                                                                'label': f'HAS_COLUMN_{column_name}'
+                                                            })
+                                                            edges.append({
+                                                                'from': patient_id,
+                                                                'to': document_id,
+                                                                'label': 'has',
+                                                            })
+                        
+
+
+
 
                     except FileNotFoundError:
-                        return jsonify({"error": "File not found."}), 404
+                            return jsonify({"error": "File not found."}), 404
+            
+            
+            
+        version_entry = {
+                "query_name": f"version - Algorithm: {algo}",
+                "version_timestamp": datetime.now().isoformat(),
+                "patient": patient_email,
+                "nodes": nodes,
+                "edges": edges
+            }
+
+            # Convert the version_entry dictionary to a JSON string
+        version_entry_json = json.dumps(version_entry)
+
+            # Create a new Version node for each version entry
+        session.run(
+                "MERGE (p:Patient {email: $patient_email})"
+                "CREATE (p)-[:HAS_VERSION]->(v:Version {version: $version})",
+                patient_email=patient_email,
+                version=version_entry_json
+            )
 
         # Return the nodes and edges in the specified format
         return jsonify({'nodes': nodes, 'edges': edges}), 200
+    
+
+
+
+#  version_entry = {
+#             "query_name": f"gettopic_bymultiple - Algorithm: {algo}",
+#             "version_timestamp": datetime.now().isoformat(),
+#             "patient": patient_email,
+#             "nodes": nodes,
+#             "edges": edges
+#         }
+
+#         # Convert the version_entry dictionary to a JSON string
+#         version_entry_json = json.dumps(version_entry)
+
+#         session.run(
+#             "MERGE (p:Patient {email: $patient_email}) "
+#             "CREATE (p)-[:HAS_VERSION]->(v:Version {version: $version})",
+#             patient_email=patient_email,
+#             version=version_entry_json
+#         )
+
+#         # Return the nodes and edges in the specified format
+#         return jsonify({'nodes': nodes, 'edges': edges}), 200
+
+@app.route("/versions/<patient_email>", methods=["GET"])
+def get_versions_by_patient_email(patient_email):
+    # Neo4j query to retrieve versions for a patient by email
+    query = (
+        "MATCH (p:Patient {email: $patient_email})-[:HAS_VERSION]->(v:Version)"
+        "RETURN id(p) as patient_id, p as patient_properties, v.version as version_data,id(v) as version_id"
+    )
+
+    with driver.session() as session:
+        result = session.run(query, patient_email=patient_email).data()
+        nodes = []
+        edges = []
+
+        # Parse JSON strings back to JSON objects
+        for record in result:
+            patient_id = record.get('patient_id')
+            patient_properties = record.get('patient_properties')
+            version_data = json.loads(record['version_data'])
+            version_id=record.get('version_id')
+
+            # Parse timestamp and format it
+            timestamp = datetime.fromisoformat(version_data['version_timestamp'])
+            formatted_timestamp = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+            # Create Version node
+            nodes.append({
+                'id': version_id,
+                'label': 'Version',
+                'group': 'version',
+                'info': {
+                    'name': f"{version_data['query_name']} - {formatted_timestamp}"
+                }
+            })
+
+            # Create Patient node
+            nodes.append({
+                'id': patient_id,
+                'label': f"Patient: {patient_properties.get('nom', 'Unknown')}",
+                'group': 'patient',
+                'info': patient_properties
+            })
+
+            edges.append({
+                'from': patient_id,
+                'to': version_id,
+                'label': "Has_version"
+            })
+
+        # Return the list of version data
+        return jsonify({'nodes': nodes, 'edges': edges}), 200
+    
+
+
+@app.route('/version', methods=['GET'])
+def get_version_by_timestamp():
+    timestamp = request.args.get('timestamp')
+    with driver.session() as session:
+        result = session.run(
+            "MATCH (p:Patient)-[:HAS_VERSION]->(v:Version) "
+            "WITH p, v, apoc.convert.fromJsonMap(v.version) AS versionData "
+            "WHERE versionData.version_timestamp = $timestamp "
+            "RETURN v AS version",
+            timestamp=timestamp
+        )
+
+        versions = [serialize_node(record["version"]) for record in result]
+
+    if versions:
+        return jsonify({"versions": versions}), 200
+    else:
+        return jsonify({"message": "Version not found for the given timestamp"}), 404
+
+
+
+
+
+# @app.route("/openai",methods=["POST"])
+# def summarize_with_ai():
+#     request_data = request.json
+#     patient_email = request_data.get("email")
+
+#     # Neo4j query to retrieve patient and associated documents
+#     query = (
+#         "MATCH (p:Patient {email: $patient_email})"
+#         "OPTIONAL MATCH (d:Document)-[:HAS]->(p)"
+#         "RETURN id(p) as patient_id, p as patient_properties, "
+#         "id(d) as document_id, d as document_properties"
+#     )
+
+#     with driver.session() as session:
+#         result = session.run(query, patient_email=patient_email).data()
+
+#         nodes = []
+#         edges = []
+
+#         for record in result:
+#             patient_id = record.get('patient_id')
+#             patient_properties = record.get('patient_properties')
+#             document_id = record.get('document_id')
+#             document_properties = record.get('document_properties')
+
+#             # Filter PDF documents
+#             if document_properties.get("filepath", "").endswith(".pdf"):
+#                 # Process document information
+#                 if document_properties.get("filepath", "").endswith(".pdf"):
+#                     # Process document information
+#                     results = []
+#                     if document_properties is not None:
+#                         try:
+                            
+#                             results = getSummerizeAi(document_properties.get("filepath"))
+#                             print("ressssssssss",results)
 
 
 # @app.route("/topic/multiple", methods=["POST"])
@@ -2757,24 +2993,26 @@ def transform_to_rdf_api():
         rdf_graph = Graph()
 
         for node in json_data["nodes"]:
-            graph.add_node(node["id"], labels=node["labels"], properties=node["properties"])
-            node_id = URIRef(BASE_IRI + node["id"])  # Use custom IRI for nodes
-            rdf_graph.add((node_id, RDF.type, URIRef(BASE_IRI + node["labels"][0])))
+            graph.add_node(node["id"], labels=node["label"], properties=node)
+            node_id = URIRef(BASE_IRI + str(node["id"]))  # Use custom IRI for nodes
+            rdf_graph.add((node_id, RDF.type, URIRef(BASE_IRI + node["label"][0])))
 
-            for key, value in node["properties"].items():
+            for key, value in node.items():
                 rdf_graph.add((node_id, URIRef(BASE_IRI + key), Literal(value)))
 
-        for link in json_data["links"]:
-            graph.add_edge(link["source"], link["target"], type=link["type"], properties=link["properties"])
+        for link in json_data["edges"]:
+            
 
-            source_id = URIRef(BASE_IRI + link["source"])  # Use custom IRI for source nodes
-            target_id = URIRef(BASE_IRI + link["target"])  # Use custom IRI for target nodes
+            graph.add_edge(link["source"], link["target"], type=link["type"], properties=link)
+
+            source_id = URIRef(BASE_IRI + str(link["source"]))  # Use custom IRI for source nodes
+            target_id = URIRef(BASE_IRI + str(link["target"]))  # Use custom IRI for target nodes
             relationship_type = URIRef(BASE_IRI + link["type"])  # Use custom IRI for relationship types
 
             # Add triple to represent relationship
             rdf_graph.add((source_id, relationship_type, target_id))
 
-            for key, value in link["properties"].items():
+            for key, value in link.items():
                 rdf_graph.add((source_id, URIRef(BASE_IRI + key), Literal(value)))
 
         rdf_ttl = rdf_graph.serialize(format='turtle')  

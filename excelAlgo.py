@@ -107,17 +107,12 @@ def getNumericFilter(path):
 
 
 
-def extract_csv_data(file_path, column_index=0):
-    values = []
-
-    with open(file_path, 'r') as file:
-        reader = csv.reader(file)
-        for row in reader:
-            try:
-                value = float(row[column_index])
-                values.append(value)
-            except (ValueError, IndexError):
-                # Handle cases where the value is not a valid float or the index is out of bounds
-                pass
-
-    return values
+def extract_csv_data(filepath):
+    # Assume the CSV file has headers in the first row
+    with open(filepath, 'r') as file:
+        csv_reader = csv.DictReader(file)
+        data = {column: [] for column in csv_reader.fieldnames}
+        for row in csv_reader:
+            for column in csv_reader.fieldnames:
+                data[column].append(float(row[column]))
+    return data
